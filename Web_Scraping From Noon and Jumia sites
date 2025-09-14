@@ -1,0 +1,243 @@
+import customtkinter as ctk
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+import requests
+from bs4 import BeautifulSoup
+import csv
+import time
+import google.generativeai as genai
+from threading import Thread
+
+# ---------------- Gemini API ----------------
+API_KEY = "AIzaSyAGgiSUmEV9LesOqw-u-k-P1v4Yeo1rDIY"
+genai.configure(api_key=API_KEY)
+
+# ---------------- Variables ----------------
+noon_products = []
+jumia_products = []
+csv_path_noon = "C:/Users/PCC/Documents/Course/Web_Scraping/Noon.csv"
+csv_path_jumia = "C:/Users/PCC/Documents/Course/Web_Scraping/Jumia.csv"
+
+# ---------------- Scraping Noon ----------------
+def Extract_noon(product_name, log_widget):
+    i = 1
+    while True:
+        link = f"https://www.noon.com/egypt-en/search/?q={product_name}&page={i}"
+        try:
+            service = Service(ChromeDriverManager().install())
+            browser = webdriver.Chrome(service=service)
+            browser.get(link)
+            time.sleep(3)
+
+            products = browser.find_elements("class name", "PBoxLinkHandler_linkWrapper__8FlHB")
+
+            if not products:
+                log_widget.insert(ctk.END, "No more Noon pages\n")
+                browser.quit()
+                break
+
+            for product in products:
+                html = product.get_attribute("outerHTML")
+                soup = BeautifulSoup(html, "html.parser")
+                try:
+                    name = soup.find("h2", {"class": "ProductDetailsSection_title__JorAV"}).text
+                except:
+                    name = "NA"
+                try:
+                    price = soup.find("div", {"class": "Price_sellingPrice__HFKZf"}).text
+                except:
+                    price = "NA"
+                try:
+                    rating = soup.find("div", {"class": "RatingPreviewStar_textCtr__sfsJG"}).text
+                except:
+                    rating = "NA"
+                try:
+                    discount = soup.find("span", {"class": "PriceDiscount_discount__1ViHb"}).text
+                except:
+                    discount = "0"
+                try:
+                    best_seller = soup.find("span", {"class": "BestSellerTag_text__1MRSg"}).text
+                except:
+                    best_seller = "Not best seller"
+                try:
+                    link_p = soup.find("a").get("href")
+                except:
+                    link_p = "NA"
+
+                noon_products.append({
+                    "Product Name": name,
+                    "Price": price,
+                    "Rating": rating,
+                    "Discount": discount,
+                    "Best Seller": best_seller,
+                    "Link": link_p
+                })
+
+            browser.quit()
+            log_widget.insert(ctk.END, f"Noon Page {i} done, total products: {len(noon_products)}\n")
+            i += 1
+
+        except Exception as e:
+            log_widget.insert(ctk.END, f"Noon error: {e}\n")
+            break
+
+# ---------------- Scraping Jumia ----------------
+def Extract_jumia(product_name, log_widget):
+    i = 1
+    while True:
+        link = f"https://www.jumia.com.eg/ar/catalog/?q={product_name}&page={i}#catalog-listing"
+        page = requests.get(link)
+        soup = BeautifulSoup(page.text, "html.parser")
+        products = soup.find_all("a", {"class": "core"})
+
+        if not products:
+            log_widget.insert(ctk.END, "No more Jumia pages\n")
+            break
+
+        for product in products:
+            try:
+                name = product.find("h3", {"class": "name"}).text
+            except:
+                name = "NA"
+            try:
+                price = product.find("div", {"class": "prc"}).text
+            except:
+                price = "NA"
+            try:
+                discount = product.find("div", {"class": "bdg"}).text
+            except:
+                discount = "0"
+            try:
+                rating = product.find("div", {"class": "stars _s"}).text
+            except:
+                rating = "NA"
+
+            jumia_products.append({
+                "Product": name,
+                "Price": price,
+                "Discount": discount,
+                "Rating": rating
+            })
+
+        log_widget.insert(ctk.END, f"Jumia Page {i} done, total products: {len(jumia_products)}\n")
+        i += 1
+
+# ---------------- Save CSV ----------------
+def save_csv_noon(log_widget):
+    if not noon_products:
+        log_widget.insert(ctk.END, "No Noon data to save.\n")
+        return
+    header = noon_products[0].keys()
+    with open(csv_path_noon, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=header)
+        writer.writeheader()
+        writer.writerows(noon_products)
+    log_widget.insert(ctk.END, "Noon CSV saved.\n")
+
+def save_csv_jumia(log_widget):
+    if not jumia_products:
+        log_widget.insert(ctk.END, "No Jumia data to save.\n")
+        return
+    header = jumia_products[0].keys()
+    with open(csv_path_jumia, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=header)
+        writer.writeheader()
+        writer.writerows(jumia_products)
+    log_widget.insert(ctk.END, "Jumia CSV saved.\n")
+
+# ---------------- Ask Gemini ----------------
+def ask_gemini(csv_path, question, log_widget):
+    try:
+        rows = []
+        with open(csv_path, mode="r", encoding="utf-8") as file:
+            reader = csv.DictReader(file)
+            for row in reader:
+                rows.append(row)
+
+        summary = "\n".join([", ".join(row.values()) for row in rows[:30]])  # limit rows for prompt
+
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        prompt = f"Here is product data:\n{summary}\n\nQuestion: {question}"
+        response = model.generate_content(prompt)
+
+        log_widget.insert(ctk.END, "\nGemini Answer:\n")
+        log_widget.insert(ctk.END, response.text + "\n")
+
+    except Exception as e:
+        log_widget.insert(ctk.END, f"Gemini API error: {e}\n")
+
+# ---------------- GUI ----------------
+def start_noon():
+    product_name = entry_product.get()
+    if not product_name:
+        log_text.insert(ctk.END, "Enter product for Noon\n")
+        return
+    Thread(target=lambda: Extract_noon(product_name, log_text)).start()
+
+def start_jumia():
+    product_name = entry_product.get()
+    if not product_name:
+        log_text.insert(ctk.END, "Enter product for Jumia\n")
+        return
+    Thread(target=lambda: Extract_jumia(product_name, log_text)).start()
+
+def save_noon():
+    save_csv_noon(log_text)
+
+def save_jumia():
+    save_csv_jumia(log_text)
+
+def ask_noon():
+    question = entry_question.get()
+    if not question:
+        log_text.insert(ctk.END, "Enter question for Noon\n")
+        return
+    Thread(target=lambda: ask_gemini(csv_path_noon, question, log_text)).start()
+
+def ask_jumia():
+    question = entry_question.get()
+    if not question:
+        log_text.insert(ctk.END, "Enter question for Jumia\n")
+        return
+    Thread(target=lambda: ask_gemini(csv_path_jumia, question, log_text)).start()
+
+# ---------------- Main Window ----------------
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("green")
+
+app = ctk.CTk()
+app.geometry("950x700")
+app.title("🛒 Noon & Jumia Scraper + Gemini AI")
+
+# Input Frame
+frame_input = ctk.CTkFrame(app)
+frame_input.pack(pady=10, padx=10, fill="x")
+
+ctk.CTkLabel(frame_input, text="🔍 Enter Product Name:", font=("Arial", 14)).pack(pady=5)
+entry_product = ctk.CTkEntry(frame_input, width=400, font=("Arial", 14))
+entry_product.pack(pady=5)
+
+ctk.CTkButton(frame_input, text="Scrape Noon", command=start_noon).pack(pady=5, side="left", padx=10)
+ctk.CTkButton(frame_input, text="Scrape Jumia", command=start_jumia).pack(pady=5, side="left", padx=10)
+ctk.CTkButton(frame_input, text="Save Noon CSV", command=save_noon).pack(pady=5, side="left", padx=10)
+ctk.CTkButton(frame_input, text="Save Jumia CSV", command=save_jumia).pack(pady=5, side="left", padx=10)
+
+# Gemini Frame
+frame_gemini = ctk.CTkFrame(app)
+frame_gemini.pack(pady=10, padx=10, fill="x")
+
+ctk.CTkLabel(frame_gemini, text="🤖 Ask Gemini:", font=("Arial", 14)).pack(pady=5)
+entry_question = ctk.CTkEntry(frame_gemini, width=600, font=("Arial", 14))
+entry_question.pack(pady=5)
+ctk.CTkButton(frame_gemini, text="Ask Noon", command=ask_noon).pack(pady=5, side="left", padx=10)
+ctk.CTkButton(frame_gemini, text="Ask Jumia", command=ask_jumia).pack(pady=5, side="left", padx=10)
+
+# Log Frame
+frame_log = ctk.CTkFrame(app)
+frame_log.pack(pady=10, padx=10, fill="both", expand=True)
+ctk.CTkLabel(frame_log, text="📝 Log Output:", font=("Arial", 14)).pack(pady=5)
+log_text = ctk.CTkTextbox(frame_log, width=850, height=400, font=("Arial", 12))
+log_text.pack(pady=10, padx=10, fill="both", expand=True)
+
+app.mainloop()
